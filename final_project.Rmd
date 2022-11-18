@@ -8,3 +8,86 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
+
+```{r}
+library(here)
+library(tidyverse)
+library(sf)
+library(tmap)
+```
+
+
+# Reading in the Data
+```{r}
+salmon_populations <- read_csv(here("data/Salmonid_Population_Monitoring_Data_CMPv2021.csv"))
+
+
+watershed <- st_read("data/ds3001/ds3001.gdb")
+
+
+protected_areas <- st_read("data/CPAD_2022a/CPAD_2022a_Holdings.dbf")
+
+```
+
+
+```{r}
+
+spawning_data <- salmon_populations |> filter(`Life Stage` %in% "Adult") #only adult salmon 
+
+watershed_id <- unique(spawning_data$GEO_ID_POLY) #making a list of all the watersheds I want to keep
+
+watershed_new <- watershed |> filter(GEO_ID_POL %in% watershed_id) #filter to watersheds that have data I might be interested in 
+
+
+
+```
+
+
+
+```{r}
+tm_shape(watershed_new) + #mapping to check out the watershed polygons
+  tm_polygons()
+
+
+tm_shape(protected_areas) + #mapping to check out the protected areas polygons
+  tm_polygons()
+
+#clip protected areas to the extent of watersheds
+
+cropped_diff <- protected_areas[watershed_new, op = st_intersects] |> st_make_valid(cropped_diff)
+
+tmap_options(check.and.fix = TRUE)
+
+tm_shape(cropped_diff) +
+  tm_polygons() + tm_shape(watershed_new) +
+  tm_borders(col = "blue", alpha = 0.4)
+
+test <- st_intersection(watershed_new, cropped_diff) |> group_by(GEO_ID_POL) |> summarize(sum(Shape_Area))
+
+
+tm_shape(test) + 
+  tm_borders() +
+tm_shape(watershed_new) +
+  tm_polygons(col = "blue", alpha = 0.5)
+
+```
+
+
+```{r}
+# Calculate area and tidy up
+intersect_polygons <- st_intersection(watershed_new, cropped_diff) %>% 
+   mutate(intersect_area = st_area(.)) %>%  # create new column with shape area
+   dplyr::select(Name, intersect_area)
+
+total_overlap <- intersect_polygons |> group_by(Name) |> summarize(n()) |> 
+  mutate(total_protected = st_area(Shape)) |>   #sum total protected area by watershed
+  st_drop_geometry()
+
+watershed_area <- watershed_new |> mutate(total_area = st_area(Shape)) #find the total area of each watershed 
+
+watershed_protected <- left_join(watershed_area, total_overlap, by = "Name") #add area protected column by joining
+
+watershed_final <- watershed_protected |> mutate(percent_protected = as.numeric((total_protected)/ as.numeric(total_area)) *100) #create a column for %protected 
+
+```
+
