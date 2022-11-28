@@ -28,10 +28,10 @@ I used data from two sources: California Department of fish and wildlife and Cal
 salmon_populations <- read_csv(here("data/Salmonid_Population_Monitoring_Data_CMPv2021.csv"))
 
 
-watershed <- st_read("data/ds3001/ds3001.gdb")
+watershed <- st_read(here("data/ds3001/ds3001.gdb"))
 
 
-protected_areas <- st_read("data/CPAD_2022a/CPAD_2022a_Holdings.dbf")
+protected_areas <- st_read(here("data/CPAD_2022a/CPAD_2022a_Holdings.dbf"))
 
 ```
 
@@ -39,17 +39,17 @@ protected_areas <- st_read("data/CPAD_2022a/CPAD_2022a_Holdings.dbf")
 
 In this section I refine the data, for this study I am interested in looking at adult population counts, so I select data on Adults.
 
-Not every watershed polygon has count data for it. I am taking out polygons with no adult data associated. There are 157 polygons of watersheds, I have adult counts for 110 of them.
+Not every watershed polygon provided by the CMP has count data for it. I am taking out polygons with no adult data associated. There are 157 polygons of watersheds, I have adult counts for 110 of them.
 
 ```{r}
 
 spawning_data <- salmon_populations |> filter(`Life Stage` %in% "Adult") |> #all adult salmon
-  select("Population", "Watershed", "Species", Brood_year = "Brood Year", "GEO_ID_POLY", "Value") |> filter(!is.na(GEO_ID_POLY)) #taking out data with no spatial id
-
+  select("Population", "Watershed", "Species", Brood_year = "Brood Year", "GEO_ID_POLY", "Value", "Metric", "Estimation method") |> #selecting relevant columns
+  filter(!is.na(GEO_ID_POLY)) #taking out data with no matching spatial id
 
 watershed_id <- unique(spawning_data$GEO_ID_POLY) #making a list of all the watersheds that have adult population data 
 
-watershed_new <- watershed |> filter(GEO_ID_POL %in% watershed_id)#filter to watersheds that have spawning data available
+watershed_new <- watershed |> filter(GEO_ID_POL %in% watershed_id) |> st_make_valid() #filter to watersheds that have spawning data available
 
 
 protected <- protected_areas |> select(UNIT_NAME, YR_EST) |> st_make_valid()
@@ -68,46 +68,45 @@ protected2 <- protected |> filter(YR_EST < 2009| YR_EST %in% c(NA)) #remove afte
 ## Calculating Percent Protected: Geo spatial Wrangling
 
 ```{r}
-intersect_polygons <- st_intersection(protected2, watershed) %>% 
-   mutate(intersect_area = st_area(.)) %>%  # create new column with shape area
-   dplyr::select(Name, GEO_ID_POL, intersect_area) #select columns
+#Filter to protected areas within watersheds of interest and find the area of intersection for each 
+intersect_polygons <- st_intersection(protected2, watershed_new) |> 
+   dplyr::select(Name, GEO_ID_POL) #select relevant columns
  
-#find total protected area by watershed
-total_overlap <- intersect_polygons |> group_by(Name) |> summarize(n())|> 
-  mutate(total_protected = st_area(geometry)) 
+#find total area protected for each watershed 
+total_overlap <- intersect_polygons |> group_by(Name) |> #group by watershed
+  summarize(geometry = st_union(geometry))|> #combine geometries within watershed
+  mutate(total_protected = st_area(geometry)) #find total protected 
+
+# dropping geometry 
+total_overlap_geomless <- total_overlap |> st_drop_geometry()
+
+watershed_area <- watershed_new |> mutate(total_area = st_area(Shape)) #find the total area of each watershed 
+
+watershed_protected <- left_join(watershed_area, total_overlap_geomless, by = "Name") #add area protected column by joining
+
+#calculate percent protected 
+watershed_final <- watershed_protected |> 
+mutate(percent_protected = 
+         as.numeric((total_protected)/ as.numeric(total_area)) *100) |> 
+  mutate(percent_protected = round(percent_protected, digits = 0)) |> #round 
+  mutate(percent_protected  = replace_na(percent_protected, 0)) #change NA to 0
+
+#drop geometry and make it a data frame
+watershed_geomless <- st_drop_geometry(watershed_final) |> as.data.frame() |> 
+  select(- Method_Typ)
+
+#combine spawning observations with percent protected
+all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = "GEO_ID_POL")) |> select("Population", "Species", "Value", "percent_protected", "Name", "Brood_year", "Metric", "Estimation method")
 
 ```
 
-### Mapping
-
 ```{r}
-
 tmap_mode("view")
 
 tmap_options(check.and.fix = TRUE)
 
-tm_shape(total_overlap) + tm_fill(col = "green") + #map protected portions
-  tm_shape(watershed_new) + tm_borders(col = "blue") #map watershed boundaries
-
-```
-
-```{r}
-# dropping geometry 
-total_overlap_2 <- total_overlap |> st_drop_geometry()
-
-watershed_area <- watershed_new |> mutate(total_area = st_area(Shape)) #find the total area of each watershed 
-
-watershed_protected <- left_join(watershed_area, total_overlap_2, by = "Name") #add area protected column by joining
-
-watershed_final <- watershed_protected |> mutate(percent_protected = as.numeric((total_protected)/ as.numeric(total_area)) *100) |> 
-  mutate(percent_protected = round(percent_protected, digits = 0)) |> 
-  mutate(percent_protected  = replace_na(percent_protected, 0))
-
-#drop geometry and make it a data frame
-watershed_geomless <- st_drop_geometry(watershed_final) |> as.data.frame() 
-
-#all spawning observations with percent protected included 
-all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = "GEO_ID_POL"))
+tm_shape(total_overlap) + tm_fill(col = "#004600") + #map protected portions
+  tm_shape(watershed_new) + tm_borders(col = "blue") + tm_add_legend(labels = c( "Watershed Boundary", "Protected area"), col = c("blue", "#004600")) #map watershed boundaries
 
 ```
 
@@ -116,40 +115,39 @@ all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = 
 ## Data Wrangling
 
 ```{r}
-steelhead <- all_data |> filter(Species == "Steelhead")
+steelhead <- all_data |> filter(Species == "Steelhead") #filter for steelhead
 
 
-steelhead2 <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = mean(percent_protected)) #taking the max estimation for years where estimate done in multiple ways 
+steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = mean(percent_protected)) #taking the mean estimation for years where estimate done multiple ways 
 
 
-data_years <- steelhead2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
 
+#making list of sites where I have consistent data between 2009 and 2018
 use_list <- data_years |> filter(min_year <= 2009) |> filter(max_year >= 2018)
-
 
 list <- use_list$Population
 
+#selecting populations in my list between 2009 and 2018
+steelhead_new <- steelhead_summary |> filter(Population %in% list) |> filter(Brood_year >= 2009) |> filter(Brood_year <= 2018)
 
-steelhead_usable <- steelhead2 |> filter(Population %in% list) |> filter(Brood_year >= 2009) |> filter(Brood_year <= 2018)
 
 #remove any populations which are zero over this whole time period
-steelhead12 <- steelhead_usable |> group_by(Population) |> summarize(max = max(Value)) |> filter(max == 0)
-remove <- steelhead12$Population
+steelhead_zero <- steelhead_new |> group_by(Population) |> summarize(max = max(Value)) |> filter(max == 0)
+remove <- steelhead_zero$Population
 
 
-steelhead_usable <- steelhead_usable |> filter(!Population %in% remove)
+steelhead_usable <- steelhead_new |> filter(!Population %in% remove)
 
+#removing sites that do not have data at the min or max year 
 remove_list <- steelhead_usable |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) |> 
   filter(max_year != 2018 | min_year != 2009)
 
 remove <- remove_list$Population
 
 
-steelhead_usable <- steelhead_usable |> filter(!Population %in% remove)
-
-
- 
- 
+steelhead_final <- steelhead_usable |> filter(!Population %in% remove) |> 
+  mutate(year = as.numeric(Brood_year)) #make brood year numeric
 
 ```
 
@@ -157,19 +155,17 @@ steelhead_usable <- steelhead_usable |> filter(!Population %in% remove)
 
 ## Regression
 
-$population = B_0 + B_1year_t + B_2Year_t * Protected +E_i$
+$population = B_0 + B_1year_t + B_2Year_t * percentProtected +E_i$
 
 ```{r}
-steelhead_new <- steelhead_usable |>  mutate(year = as.numeric(Brood_year))
 
-summary(lm(Value~year + year:percent_protected, data = steelhead_new))
+summary(lm(Value~year + year:percent_protected, data = steelhead_final))
 
 
 #running a regression with all the steelhead data
-steelhead_all <- all_data |> filter(Species == "Steelhead") |> mutate(year = as.numeric(Brood_year))
+steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year))
 
 summary(lm(Value~year + year:percent_protected, data = steelhead_all))
-
 
 ```
 
@@ -177,11 +173,10 @@ summary(lm(Value~year + year:percent_protected, data = steelhead_all))
 
 ### Linear in Parameters
 
-It's very difficult to tell if its linear in parameters
+My data does not necessarily appear to be linear in parameters, which may cause it violate the first assumption of OLS.
 
 ```{r}
-ggplot(data = steelhead_new, aes(x = year, y = Value)) + geom_point() + geom_smooth(method=lm, se = FALSE)
-
+ggplot(data = steelhead_final, aes(x = year, y = Value)) + geom_point() + geom_smooth(method=lm, se = FALSE)
 
 
 ```
@@ -195,7 +190,7 @@ ggplot(data = steelhead_new, aes(x = year, y = Value)) + geom_point() + geom_smo
 These do not appear to be normally distributed.
 
 ```{r}
-model <- lm(Value~year + year:percent_protected, data = steelhead_new)
+model <- lm(Value~year + year:percent_protected, data = steelhead_final)
 residuals <- model$residuals |> as.data.frame()
 
 
