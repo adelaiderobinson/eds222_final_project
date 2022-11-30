@@ -169,7 +169,8 @@ ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() + geom_smo
 These do not appear to be normally distributed.
 
 ```{r}
-model <- lm(Value~year + year:percent_protected, data = steelhead_final)
+model <- lm(Value~year + year:percent_protected, data = steelhead_all)
+
 residuals <- model$residuals |> as.data.frame()
 
 
@@ -188,7 +189,7 @@ coho2 <- coho |>  group_by(Population, Brood_year) |> summarize(Value = max(Valu
 data_years <- coho2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over]
 
 
-ggplot(data = coho_final) + geom_point(aes(x = Brood_year, y = Value))
+ggplot(data = coho2) + geom_point(aes(x = Brood_year, y = Value))
 
 
 ```
@@ -201,12 +202,7 @@ summary(felm(Value~year + year:percent_protected + percent_protected | Populatio
 
 ```
 
-```{r}
-acf(coho_final$Value, lag.max = 10)
 
-```
-
-# 
 
 # Limitations and Issues
 
