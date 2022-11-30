@@ -14,6 +14,7 @@ library(here)
 library(tidyverse)
 library(sf)
 library(tmap)
+library(lfe)
 ```
 
 # Background
@@ -60,8 +61,7 @@ protected <- protected_areas |> select(UNIT_NAME, YR_EST) |> st_make_valid()
 ## Filtering Protected Areas
 
 ```{r}
-protected2 <- protected |> filter(YR_EST < 2009| YR_EST %in% c(NA)) #remove after 2009
-
+protected2 <- protected |> filter(YR_EST < 1981| YR_EST %in% c(NA)) #remove after 1981
 
 ```
 
@@ -123,31 +123,6 @@ steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize
 
 data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
 
-#making list of sites where I have consistent data between 2009 and 2018
-use_list <- data_years |> filter(min_year <= 2009) |> filter(max_year >= 2018)
-
-list <- use_list$Population
-
-#selecting populations in my list between 2009 and 2018
-steelhead_new <- steelhead_summary |> filter(Population %in% list) |> filter(Brood_year >= 2009) |> filter(Brood_year <= 2018)
-
-
-#remove any populations which are zero over this whole time period
-steelhead_zero <- steelhead_new |> group_by(Population) |> summarize(max = max(Value)) |> filter(max == 0)
-remove <- steelhead_zero$Population
-
-
-steelhead_usable <- steelhead_new |> filter(!Population %in% remove)
-
-#removing sites that do not have data at the min or max year 
-remove_list <- steelhead_usable |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) |> 
-  filter(max_year != 2018 | min_year != 2009)
-
-remove <- remove_list$Population
-
-
-steelhead_final <- steelhead_usable |> filter(!Population %in% remove) |> 
-  mutate(year = as.numeric(Brood_year)) #make brood year numeric
 
 ```
 
@@ -155,18 +130,23 @@ steelhead_final <- steelhead_usable |> filter(!Population %in% remove) |>
 
 ## Regression
 
-$population = B_0 + B_1year_t + B_2Year_t * percentProtected +E_i$
+$populationcount = B_0 + B_1year_t + B_2Year_t * percentProtected +percentprotected +E_i$
 
 ```{r}
-
-summary(lm(Value~year + year:percent_protected, data = steelhead_final))
-
 
 #running a regression with all the steelhead data
 steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year))
 
-summary(lm(Value~year + year:percent_protected, data = steelhead_all))
+summary(lm(Value~year+ year:percent_protected + percent_protected, data = steelhead_all))
 
+```
+
+```{r}
+
+
+model <- felm(Value~year+ year:percent_protected + percent_protected | Population, data = steelhead_all)
+
+getfe(model)
 ```
 
 ## Assumptions of OLS
@@ -176,8 +156,7 @@ summary(lm(Value~year + year:percent_protected, data = steelhead_all))
 My data does not necessarily appear to be linear in parameters, which may cause it violate the first assumption of OLS.
 
 ```{r}
-ggplot(data = steelhead_final, aes(x = year, y = Value)) + geom_point() + geom_smooth(method=lm, se = FALSE)
-
+ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() + geom_smooth(method=lm, se = FALSE)
 
 ```
 
@@ -206,50 +185,24 @@ coho <- all_data |> filter(Species == "Coho salmon")
 coho2 <- coho |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = max(percent_protected)) #taking the max estimation for years where estimate done in multiple ways 
 
 
-data_years <- coho2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+data_years <- coho2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over]
 
-use_list <- data_years |> filter(min_year <= 2009) |> filter(max_year >= 2018)
-
-list <- use_list$Population
-
-
-coho_usable <- coho2 |> filter(Population %in% list) |> filter(Brood_year >= 2009) |> filter(Brood_year <= 2018)
-
-#remove any populations which are zero over this whole time period
-coho12 <- coho_usable |> group_by(Population) |> summarize(max = max(Value)) |> filter(max == 0)
-remove <- coho12$Population
-
-
-coho_usable2 <- coho_usable |> filter(!Population %in% remove)
-
-remove_list <- coho_usable |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) |> 
-  filter(max_year != 2018 | min_year != 2009)
-
-remove <- remove_list$Population
-
-
-coho_final <- coho_usable |> filter(!Population %in% remove)
 
 ggplot(data = coho_final) + geom_point(aes(x = Brood_year, y = Value))
-
-
-
 
 
 ```
 
 ```{r}
-coho_final <- coho_final |>  mutate(year = as.numeric(Brood_year))
+coho_final <- coho2 |>  mutate(year = as.numeric(Brood_year))
 
-summary(lm(Value~year + year:percent_protected, data = coho_final))
+summary(felm(Value~year + year:percent_protected + percent_protected | Population, data = coho_final))
 
 
 ```
 
 ```{r}
 acf(coho_final$Value, lag.max = 10)
-
-
 
 ```
 
