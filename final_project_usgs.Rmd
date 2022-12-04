@@ -1,0 +1,224 @@
+---
+title: "Salmon and Protected Areas"
+author: "Adelaide Robinson"
+date: "2022-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(here)
+library(tidyverse)
+library(sf)
+library(tmap)
+library(lfe)
+```
+
+# Background
+
+# Data Wrangling: All Species
+
+## Reading In Data
+
+I used data from two sources: California Department of fish and wildlife and California Protected areas database.
+
+```{r}
+salmon_populations <- read_csv(here("data/Salmonid_Population_Monitoring_Data_CMPv2021.csv"))
+
+
+watershed <- st_read(here("data/ds3001/ds3001.gdb"))
+
+
+protected_areas <- st_read(here("data/usgs/PADUS3_0_State_CA_SHP/PADUS3_0Combined_StateCA.shp")) |> st_transform("EPSG:3310") |> st_make_valid(protected_areas)
+
+```
+
+## Filtering to Adult Salmon Data
+
+In this section I refine the data, for this study I am interested in looking at adult population counts, so I select data on Adults.
+
+Not every watershed polygon provided by the CMP has count data for it. I am taking out polygons with no adult data associated. There are 157 polygons of watersheds, I have adult counts for 110 of them.
+
+```{r}
+
+spawning_data <- salmon_populations |> filter(`Life Stage` %in% "Adult") |> #all adult salmon
+  select("Population", "Watershed", "Species", Brood_year = "Brood Year", "GEO_ID_POLY", "Value", "Metric", "Estimation method") |> #selecting relevant columns
+  filter(!is.na(GEO_ID_POLY)) #taking out data with no matching spatial id
+
+watershed_id <- unique(spawning_data$GEO_ID_POLY) #making a list of all the watersheds that have adult population data 
+
+watershed_new <- watershed |> filter(GEO_ID_POL %in% watershed_id) |> st_make_valid() 
+
+
+protected <- protected_areas |> filter(GAP_Sts <= 2) |> select(Unit_Nm, Date_Est)
+#selecting relevant columns
+
+```
+
+## Filtering Protected Areas
+
+```{r}
+protected2 <- protected |> filter(Date_Est < 1981| Date_Est %in% c(NA)) #remove after 1981
+
+```
+
+## Calculating Percent Protected: Geo spatial Wrangling
+
+```{r}
+#Filter to protected areas within watersheds of interest and find the area of intersection for each 
+intersect_polygons <- st_intersection(watershed_new, protected2) |> 
+   dplyr::select(Name, GEO_ID_POL) #select relevant columns
+ 
+#find total area protected for each watershed 
+total_overlap <- intersect_polygons |> group_by(Name) |> #group by watershed
+  summarize(geometry = st_union(Shape))|> #combine geometries within watershed
+  mutate(total_protected = st_area(geometry)) #find total protected 
+
+# dropping geometry 
+total_overlap_geomless <- total_overlap |> st_drop_geometry()
+
+watershed_area <- watershed_new |> mutate(total_area = st_area(Shape)) #find the total area of each watershed 
+
+watershed_protected <- left_join(watershed_area, total_overlap_geomless, by = "Name") #add area protected column by joining
+
+#calculate percent protected 
+watershed_final <- watershed_protected |> 
+mutate(percent_protected = 
+         as.numeric((total_protected)/ as.numeric(total_area)) *100) |> 
+  mutate(percent_protected = round(percent_protected, digits = 0)) |> #round 
+  mutate(percent_protected  = replace_na(percent_protected, 0)) #change NA to 0
+
+
+#drop geometry and make it a data frame
+watershed_geomless <- st_drop_geometry(watershed_final) |> as.data.frame() |> 
+  select(- Method_Typ)
+
+#combine spawning observations with percent protected
+all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = "GEO_ID_POL")) |> select("Population", "Species", "Value", "percent_protected", "Name", "Brood_year", "Metric", "Estimation method", "GEO_ID_POLY")
+
+```
+
+```{r}
+tmap_mode("view")
+
+tmap_options(check.and.fix = TRUE)
+
+tm_shape(total_overlap) + tm_fill(col = "#004600") + #map protected portions
+  tm_shape(watershed_new) + tm_borders(col = "blue") + tm_add_legend(labels = c( "Watershed Boundary", "Protected area"), col = c("blue", "#004600")) #map watershed boundaries
+
+```
+
+```{r}
+tm_shape(watershed_final) + tm_polygons(col = "percent_protected")
+```
+
+# Steelhead
+
+## Data Wrangling
+
+```{r}
+steelhead <- all_data |> filter(Species == "Steelhead") #filter for steelhead
+
+
+steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = round(mean(percent_protected))) #taking the mean estimation for years where estimate done multiple ways 
+
+
+data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+
+```
+
+# 
+
+## Regression
+
+$populationcount = B_0 + B_1year_t + + B_2percentprotected + B_3Year_t * percentProtected +E_i$
+
+the interaction term allows the effect of percent protected to vary by year. The level of one variable influences the relationship between the outcome and other variables. In my case I am asking if percent protected changes the relationship between time and fish counts. B3 is the difference in the effect of year on fish count for every one increase in protected area. The slope of fish count by year is 32 + -.5828 \* %protected. As percent protected increases, the increase in steelhead populations is lower. When the year is 0, we expect
+
+<https://theeffectbook.net/ch-FixedEffects.html>
+
+<https://statisticsglobe.com/fixed-effects-linear-regression>
+
+```{r}
+
+
+#making the first year 0, as I only want to understand population change over the time period I have data for 
+
+steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year) -1981)
+
+model <- felm(Value~year + percent_protected + year:percent_protected  | Population, data = steelhead_all)
+
+summary(model)
+
+model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
+
+summary(model)
+
+confint(model, 'percent_protected', level = 0.95)
+
+confint(model, 'year:percent_protected', level = 0.95)
+
+confint(model, 'year', level = 0.95)
+```
+
+## Assumptions of OLS
+
+### Linear in Parameters
+
+My data does not necessarily appear to be linear in parameters, which may cause it violate the first assumption of OLS.
+
+```{r}
+ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() + geom_smooth(method=lm, se = FALSE)
+
+```
+
+### X has variation
+
+**This is true**
+
+### Assumption 4
+
+These do not appear to be normally distributed.
+
+```{r}
+model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
+
+residuals <- model$residuals |> as.data.frame()
+
+
+ggplot(data = residuals) + geom_histogram(aes(x = model$residuals))
+```
+
+# Coho
+
+```{r}
+
+coho <- all_data |> filter(Species == "Coho salmon")
+
+coho2 <- coho |>  group_by(Population, Brood_year) |> summarize(Value = mean(Value), percent_protected = mean(percent_protected)) #taking the max estimation for years where estimate done in multiple ways 
+
+ggplot(data = coho2) + geom_point(aes(x = Brood_year, y = Value))
+
+
+```
+
+```{r}
+coho_final <- coho2 |>  mutate(year = as.numeric(Brood_year) - 1995)
+
+summary(felm(Value~year + year:percent_protected + percent_protected | Population, data = coho_final))
+
+model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
+
+summary(model)
+confint(model, 'percent_protected', level = 0.95)
+
+confint(model, 'year', level = 0.95)
+
+```
+
+# Limitations and Issues
+
+There were a lot of NA s in the year protected roughly 32 % of the polygons I used The definition of protected area was very loose. The data was not consistent over time, so I only used data from 2008-2018. Some watersheds within the study have hatchery releases which are not consistent over time, this can wildly affect the population from year to year.

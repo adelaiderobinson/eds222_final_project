@@ -15,6 +15,7 @@ library(tidyverse)
 library(sf)
 library(tmap)
 library(lfe)
+library(kableExtra)
 ```
 
 # Background
@@ -33,6 +34,7 @@ watershed <- st_read(here("data/ds3001/ds3001.gdb"))
 
 
 protected_areas <- st_read(here("data/CPAD_2022a/CPAD_2022a_Holdings.dbf"))
+
 
 ```
 
@@ -53,7 +55,7 @@ watershed_id <- unique(spawning_data$GEO_ID_POLY) #making a list of all the wate
 watershed_new <- watershed |> filter(GEO_ID_POL %in% watershed_id) |> st_make_valid() #filter to watersheds that have spawning data available
 
 
-protected <- protected_areas |> select(UNIT_NAME, YR_EST) |> st_make_valid()
+protected <- protected_areas |> select(UNIT_NAME, YR_EST)
 #selecting relevant columns
 
 ```
@@ -69,12 +71,12 @@ protected2 <- protected |> filter(YR_EST < 1981| YR_EST %in% c(NA)) #remove afte
 
 ```{r}
 #Filter to protected areas within watersheds of interest and find the area of intersection for each 
-intersect_polygons <- st_intersection(protected2, watershed_new) |> 
+intersect_polygons <- st_intersection(watershed_new, protected2) |> 
    dplyr::select(Name, GEO_ID_POL) #select relevant columns
  
 #find total area protected for each watershed 
 total_overlap <- intersect_polygons |> group_by(Name) |> #group by watershed
-  summarize(geometry = st_union(geometry))|> #combine geometries within watershed
+  summarize(geometry = st_union(Shape))|> #combine geometries within watershed
   mutate(total_protected = st_area(geometry)) #find total protected 
 
 # dropping geometry 
@@ -91,12 +93,13 @@ mutate(percent_protected =
   mutate(percent_protected = round(percent_protected, digits = 0)) |> #round 
   mutate(percent_protected  = replace_na(percent_protected, 0)) #change NA to 0
 
+
 #drop geometry and make it a data frame
 watershed_geomless <- st_drop_geometry(watershed_final) |> as.data.frame() |> 
   select(- Method_Typ)
 
 #combine spawning observations with percent protected
-all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = "GEO_ID_POL")) |> select("Population", "Species", "Value", "percent_protected", "Name", "Brood_year", "Metric", "Estimation method")
+all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = "GEO_ID_POL")) |> select("Population", "Species", "Value", "percent_protected", "Name", "Brood_year", "Metric", "Estimation method", "GEO_ID_POLY")
 
 ```
 
@@ -110,6 +113,10 @@ tm_shape(total_overlap) + tm_fill(col = "#004600") + #map protected portions
 
 ```
 
+```{r}
+tm_shape(watershed_final) + tm_polygons(col = "percent_protected")
+```
+
 # Steelhead
 
 ## Data Wrangling
@@ -118,11 +125,9 @@ tm_shape(total_overlap) + tm_fill(col = "#004600") + #map protected portions
 steelhead <- all_data |> filter(Species == "Steelhead") #filter for steelhead
 
 
-steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = mean(percent_protected)) #taking the mean estimation for years where estimate done multiple ways 
-
+steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = mean(Value), percent_protected = round(mean(percent_protected))) #taking the mean estimation for years where estimate done multiple ways 
 
 data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
-
 
 ```
 
@@ -130,23 +135,34 @@ data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = 
 
 ## Regression
 
-$populationcount = B_0 + B_1year_t + B_2Year_t * percentProtected +percentprotected +E_i$
+$populationcount = B_0 + B_1year_t + + B_2percentprotected + B_3Year_t * percentProtected +E_i$
+
+the interaction term allows the effect of percent protected to vary by year. The level of one variable influences the relationship between the outcome and other variables. In my case I am asking if percent protected changes the relationship between time and fish counts. B3 is the difference in the effect of year on fish count for every one increase in protected area. The slope of fish count by year is 32 + -.5828 \* %protected. As percent protected increases, the increase in steelhead populations is lower. When the year is 0, we expect
+
+<https://theeffectbook.net/ch-FixedEffects.html>
+
+<https://statisticsglobe.com/fixed-effects-linear-regression>
 
 ```{r}
 
-#running a regression with all the steelhead data
-steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year))
 
-summary(lm(Value~year+ year:percent_protected + percent_protected, data = steelhead_all))
+#making the first year 0, as I only want to understand population change over the time period I have data for 
 
-```
+steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year) -1981)
 
-```{r}
+model <- felm(Value~year + percent_protected + year:percent_protected  | Population, data = steelhead_all)
 
+summary(model)
 
-model <- felm(Value~year+ year:percent_protected + percent_protected | Population, data = steelhead_all)
+model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
 
-getfe(model)
+summary(model)
+
+confint(model, 'percent_protected', level = 0.95)
+
+confint(model, 'year:percent_protected', level = 0.95)
+
+confint(model, 'year', level = 0.95)
 ```
 
 ## Assumptions of OLS
@@ -169,7 +185,7 @@ ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() + geom_smo
 These do not appear to be normally distributed.
 
 ```{r}
-model <- lm(Value~year + year:percent_protected, data = steelhead_all)
+model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
 
 residuals <- model$residuals |> as.data.frame()
 
@@ -183,11 +199,7 @@ ggplot(data = residuals) + geom_histogram(aes(x = model$residuals))
 
 coho <- all_data |> filter(Species == "Coho salmon")
 
-coho2 <- coho |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = max(percent_protected)) #taking the max estimation for years where estimate done in multiple ways 
-
-
-data_years <- coho2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over]
-
+coho2 <- coho |>  group_by(Population, Brood_year) |> summarize(Value = mean(Value), percent_protected = mean(percent_protected)) #taking the mean estimation for years where estimate done in multiple ways 
 
 ggplot(data = coho2) + geom_point(aes(x = Brood_year, y = Value))
 
@@ -195,14 +207,18 @@ ggplot(data = coho2) + geom_point(aes(x = Brood_year, y = Value))
 ```
 
 ```{r}
-coho_final <- coho2 |>  mutate(year = as.numeric(Brood_year))
+coho_final <- coho2 |>  mutate(year = as.numeric(Brood_year) - 1995)
 
 summary(felm(Value~year + year:percent_protected + percent_protected | Population, data = coho_final))
 
+model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
+
+summary(model)
+confint(model, 'percent_protected', level = 0.95)
+
+confint(model, 'year', level = 0.95)
 
 ```
-
-
 
 # Limitations and Issues
 
