@@ -104,6 +104,8 @@ all_data <- left_join(spawning_data, watershed_geomless, by = c("GEO_ID_POLY" = 
 ```
 
 ```{r}
+
+
 tmap_mode("view")
 
 tmap_options(check.and.fix = TRUE)
@@ -124,10 +126,12 @@ tm_shape(watershed_final) + tm_polygons(col = "percent_protected")
 ```{r}
 steelhead <- all_data |> filter(Species == "Steelhead") #filter for steelhead
 
+new <- steelhead |> group_by(Population) |> summarize(percent_protected = max(percent_protected))
 
-steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = mean(Value), percent_protected = round(mean(percent_protected))) #taking the mean estimation for years where estimate done multiple ways 
+steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = round(mean(Value),0))
 
-data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+steelhead_final <- left_join(steelhead_summary, new, by = "Population")
+                                                                                 
 
 ```
 
@@ -148,7 +152,7 @@ the interaction term allows the effect of percent protected to vary by year. The
 
 #making the first year 0, as I only want to understand population change over the time period I have data for 
 
-steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year) -1981)
+steelhead_all <- steelhead_final |> mutate(year = as.numeric(Brood_year) -1981)
 
 model <- felm(Value~year + percent_protected + year:percent_protected  | Population, data = steelhead_all)
 
