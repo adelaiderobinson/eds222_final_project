@@ -1,7 +1,10 @@
 ---
 title: "Salmon and Protected Areas"
 author: "Adelaide Robinson"
-format: revealjs
+format: 
+  revealjs:
+    theme: sky
+    scrollable: true
 editor: visual
 execute: 
   echo: false
@@ -10,19 +13,24 @@ execute:
   output: false
 ---
 
-## Background and Motivation
+## Background and Motivation {.smaller}
 
 -   Many populations of anadromous salmon are expected to go extinct within the next 100 years
-    -   5 out of seven steelhead DPS (Distinct Population Segments) in California are federally listed
-    -   Both ESU (evolutionary significant units) of coho are listed
--   While numerous factors affect their decline habitat loss is a major factor
--   Urban land use has been linked to the decline over time and shown to impact juvenile survival in the Pacific Northwest
+
+    -   Anadromous fish are born in freshwater, migrate to ocean and return to freshwater to reproduce
+    -   Most steelhead and all coho populations within California Are Federally listed
+
+-   Habitat loss and urban land use are linked with their decline and lowered juvenile survival
+
+![](photos/20200306_105311.jpg){fig-align="center" width="565"}
 
 ## Question
 
 How do protected areas impact salmon populations within California?
 
-## Data
+![](photos/20180131_110346.jpg){fig-align="center" width="487"}
+
+## Data {.smaller}
 
 -   California Monitoring Plan for Salmon and Steelhead
 
@@ -30,15 +38,15 @@ How do protected areas impact salmon populations within California?
 
     -   Monitor and Assemble data on anadromous salmon populations across CA
 
-        -   population counts for watersheds across California
+        -   Adult population counts
 
         -   Geospatial data containing the extents of monitored watersheds
 
 -   California Protected Area Database
 
-    -   polygons of areas protected for open space across Ca
+    -   Polygons of areas protected for open space across CA
 
-# Protected Area Visualization
+## Data Wrangling
 
 ```{r}
 library(here)
@@ -46,8 +54,8 @@ library(tidyverse)
 library(sf)
 library(tmap)
 library(kableExtra)
-library(lfe)
 library(broom)
+
 salmon_populations <- read_csv(here("data/Salmonid_Population_Monitoring_Data_CMPv2021.csv"))
 
 watershed <- st_read(here("data/ds3001/ds3001.gdb"))
@@ -115,73 +123,105 @@ percent_protected <- tm_shape(watershed_final) + tm_polygons(col = "percent_prot
 tmap_arrange(area_protected,percent_protected)
 ```
 
-## Analysis
+## Analysis {.smaller}
 
-$populationcount = B_0 + B_1year_t + + B_2percentprotected + B_3Year_t * percentProtected +E_i$
+$population = B_0 + B_1year_i + B_2PercentProtected_i + B_3year_i * percentprotected_i +E_i$
 
--   Used OLS Linear Regression
+-   OLS Linear Regression
 
--   Used linear model with multiple group fixed affects
+    -   Multiple Regression: Population regressed on percent protected and year
+    -   Interaction: Percent protected and year
+        -   The slope of the relationship between year and population count can vary based on %protected.
 
-    -   helps account for difference between populations and inconsistent collection at sites over all years
+-   $H_0: B_1 = B_2 = B_3 = 0$
 
-    -   sweeps away variation between populations
+-   $H_A: B_1 ≠B_2 ≠B_3 ≠ 0$
 
-    -   I also used clustered standard error-accounts for the fact that error within populations will be correlated (violating heteroskedacticity)
+-   Ran analysis for Both coho salmon and steelhead
 
-## Results
+## Results {.smaller}
 
 ```{r}
 steelhead <- all_data |> filter(Species == "Steelhead") #filter for steelhead
 
+steelhead_consistent <- steelhead |> group_by(Population) |> summarize(percent_protected = max(percent_protected)) #making value of percent protected consistent across the population
 
-steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = max(Value), percent_protected = round(mean(percent_protected))) #taking the mean estimation for years where estimate done multiple ways 
+steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = round(mean(Value),0)) #taking average where population count calculated in more than one way
 
+steelhead_final <- left_join(steelhead_summary, steelhead_consistent, by = "Population")
+        
+No_fish <- steelhead_final |> group_by(Population) |> summarize(max = max(Value)) |> filter(max > 0)
 
-data_years <- steelhead_summary |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+Keep <- No_fish$Population
 
+steelhead <- steelhead_final |>  filter(Population %in% Keep)
+                                                                         
 #making the first year 0, as I only want to understand population change over the time period I have data for 
-
-steelhead_all <- steelhead_summary |> mutate(year = as.numeric(Brood_year) -1981)
-
+steelhead_all <- steelhead |> mutate(year = as.numeric(Brood_year) -1981)
 
 ```
 
 ```{r}
 
-model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 | Population , data = steelhead_all)
-
-summary(model)
-
-percent_protected <- confint.lm(model, 'percent_protected', level = 0.95)
-
-percent_protected
-
-interaction <- confint(model, 'year:percent_protected', level = 0.95)
-
-year <- confint(model, 'year', level = 0.95)
-
-
+model <- lm(Value~percent_protected + year + year:percent_protected, data = steelhead_all)
 
 ```
 
 ```{r}
 #| output: true
-
-tidy(model, conf.int = TRUE, conf.level = 0.95) |> kable()
+tidy(model, conf.int = TRUE) |> kable()
 
 ```
-- Interpretation
-    - Percent protected has a statistically insignificant affect on the number of fish. 
-    - It appears that percent protected decreases the rate of change in populations over time 
-        - -0.5 is the difference in the effect of year on fish count for every one increase in protected area 
-    - Year has a positive affect on the number of steelhead
-      - when %protected is 0 on average there will be an increase of 33 fish per year
-- Limitations
-   - Not convinced my data is linear in parameters
-   - Is there omitted variable bias?
-   - Using a loose definition of protected
-- What's Next?
-  - Would be better to look at overwinter survival rates
-  - Explore the relationship between protected areas and survival in a different way 
-   
+
+## Interpretation {.smaller}
+
+-   Watersheds with higher numbers of percent protected have higher numbers of fish
+
+    -   when year is 0 there will be on average 14 more steelhead for each one unit increase in percent protected
+
+-   Increase in percent protected decreases the rate of change in populations over time
+
+    -   -0.5 is the difference in the effect of year on steelhead count for every one increase in protected area
+
+-   Steelhead are increasing over time
+
+    -   when percent protected is 0 on average there will be an increase of 35 fish per year
+
+-   Coefficients are statistically significant using a significance level of 0.05, except the intercept.
+
+## Limitations and OLS Violations
+
+-   True population likely not linear in parameters
+
+-   Is there omitted variable bias?
+
+-   Error is not normally distributed or independent
+
+::: columns
+::: {.column width="50%"}
+```{r}
+#| output: true
+residuals <- model$residuals |> as.data.frame()
+
+ggplot(data = residuals) + geom_histogram(aes(x = model$residuals)) + labs(x = "residuals", title = "Model Errors")
+```
+:::
+
+::: {.column width="50%"}
+```{r}
+#| output: true
+ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() +labs( x = "Year", y = "Population Count")
+
+```
+:::
+:::
+
+## Lessons and Next Steps
+
+-   Although my results were significant, I fail to reject the null due to concerns over OLS violations
+
+    -   Other methods besides OLS may be better for answering my question
+
+-   Explore the relationship between protected areas and survival in a different way
+
+    -   Would be better to look at overwinter survival rate

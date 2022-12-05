@@ -14,7 +14,6 @@ library(here)
 library(tidyverse)
 library(sf)
 library(tmap)
-library(lfe)
 library(kableExtra)
 ```
 
@@ -126,12 +125,20 @@ tm_shape(watershed_final) + tm_polygons(col = "percent_protected")
 ```{r}
 steelhead <- all_data |> filter(Species == "Steelhead") #filter for steelhead
 
-new <- steelhead |> group_by(Population) |> summarize(percent_protected = max(percent_protected))
+steelhead_consistent <- steelhead |> group_by(Population) |> summarize(percent_protected = max(percent_protected)) #making value of percent protected consistent across the population
 
-steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = round(mean(Value),0))
+steelhead_summary <- steelhead |>  group_by(Population, Brood_year) |> summarize(Value = round(mean(Value),0)) #taking average where population count calculated in more than one way
 
-steelhead_final <- left_join(steelhead_summary, new, by = "Population")
-                                                                                 
+steelhead_final <- left_join(steelhead_summary, steelhead_consistent, by = "Population")
+        
+No_fish <- steelhead_final |> group_by(Population) |> summarize(max = max(Value)) |> filter(max > 0)
+
+Keep <- No_fish$Population
+
+steelhead <- steelhead_final |>  filter(Population %in% Keep)
+                                                                         
+#making the first year 0, as I only want to understand population change over the time period I have data for 
+steelhead_all <- steelhead |> mutate(year_ref = as.numeric(Brood_year) -1981)
 
 ```
 
@@ -141,24 +148,9 @@ steelhead_final <- left_join(steelhead_summary, new, by = "Population")
 
 $populationcount = B_0 + B_1year_t + + B_2percentprotected + B_3Year_t * percentProtected +E_i$
 
-the interaction term allows the effect of percent protected to vary by year. The level of one variable influences the relationship between the outcome and other variables. In my case I am asking if percent protected changes the relationship between time and fish counts. B3 is the difference in the effect of year on fish count for every one increase in protected area. The slope of fish count by year is 32 + -.5828 \* %protected. As percent protected increases, the increase in steelhead populations is lower. When the year is 0, we expect
-
-<https://theeffectbook.net/ch-FixedEffects.html>
-
-<https://statisticsglobe.com/fixed-effects-linear-regression>
-
 ```{r}
 
-
-#making the first year 0, as I only want to understand population change over the time period I have data for 
-
-steelhead_all <- steelhead_final |> mutate(year = as.numeric(Brood_year) -1981)
-
-model <- felm(Value~year + percent_protected + year:percent_protected  | Population, data = steelhead_all)
-
-summary(model)
-
-model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
+model <- lm(Value~percent_protected + year + year:percent_protected, data = steelhead_all)
 
 summary(model)
 
@@ -176,7 +168,7 @@ confint(model, 'year', level = 0.95)
 My data does not necessarily appear to be linear in parameters, which may cause it violate the first assumption of OLS.
 
 ```{r}
-ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() + geom_smooth(method=lm, se = FALSE)
+ggplot(data = steelhead_all, aes(x = Brood_year, y = Value)) + geom_point()
 
 ```
 
@@ -189,7 +181,6 @@ ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() + geom_smo
 These do not appear to be normally distributed.
 
 ```{r}
-model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
 
 residuals <- model$residuals |> as.data.frame()
 

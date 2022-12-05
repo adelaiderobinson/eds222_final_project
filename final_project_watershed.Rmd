@@ -59,6 +59,7 @@ watershed_new <- watershed |> filter(GEO_ID_POL %in% watershed_id) |> st_make_va
 protected <- protected_areas |> select(UNIT_NAME, YR_EST)
 #selecting relevant columns
 
+
 ```
 
 ## Filtering Protected Areas
