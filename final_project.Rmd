@@ -15,6 +15,7 @@ library(tidyverse)
 library(sf)
 library(tmap)
 library(kableExtra)
+library(lfe)
 ```
 
 # Background
@@ -27,13 +28,12 @@ I used data from two sources: California Department of fish and wildlife and Cal
 
 ```{r}
 salmon_populations <- read_csv(here("data/Salmonid_Population_Monitoring_Data_CMPv2021.csv"))
-
+#read in salmon population data 
 
 watershed <- st_read(here("data/ds3001/ds3001.gdb"))
-
-
+#read in watershed data
 protected_areas <- st_read(here("data/CPAD_2022a/CPAD_2022a_Holdings.dbf"))
-
+#
 
 ```
 
@@ -62,7 +62,7 @@ protected <- protected_areas |> select(UNIT_NAME, YR_EST)
 ## Filtering Protected Areas
 
 ```{r}
-protected2 <- protected |> filter(YR_EST < 1981| YR_EST %in% c(NA)) #remove after 1981
+protected2 <- protected |> filter(YR_EST < 2009| YR_EST %in% c(NA)) #remove after 1981
 
 ```
 
@@ -136,13 +136,34 @@ No_fish <- steelhead_final |> group_by(Population) |> summarize(max = max(Value)
 Keep <- No_fish$Population
 
 steelhead <- steelhead_final |>  filter(Population %in% Keep)
-                                                                         
-#making the first year 0, as I only want to understand population change over the time period I have data for 
-steelhead_all <- steelhead |> mutate(year_ref = as.numeric(Brood_year) -1981)
+                                                    
 
 ```
 
-# 
+```{r}
+
+
+data_years <- steelhead |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+
+#making list of sites where I have consistent data between 2009 and 2018
+use_list <- data_years |> filter(min_year <= 2009) |> filter(max_year >= 2018)
+
+list <- use_list$Population
+#selecting populations in my list between 2009 and 2018
+steelhead_new <- steelhead |> filter(Population %in% list) |> filter(Brood_year >= 2009) |> filter(Brood_year <= 2018)
+
+
+steelhead_limited <- steelhead_new |>  mutate(year = as.numeric(Brood_year) - 2009)
+
+```
+
+## option including all years
+
+```{r}
+
+steelhead_all <- steelhead_final |>  mutate(year = as.numeric(Brood_year) - 1981)
+
+```
 
 ## Regression
 
@@ -150,15 +171,23 @@ $populationcount = B_0 + B_1year_t + + B_2percentprotected + B_3Year_t * percent
 
 ```{r}
 
-model <- lm(Value~percent_protected + year + year:percent_protected, data = steelhead_all)
+model <- lm(Value~percent_protected + year + year:percent_protected, data = steelhead_limited)
 
-summary(model)
+tidy(model, conf.int = TRUE)
+
 
 confint(model, 'percent_protected', level = 0.95)
 
 confint(model, 'year:percent_protected', level = 0.95)
 
 confint(model, 'year', level = 0.95)
+```
+
+# all data regressions
+
+```{r}
+model <- felm(Value~ year + year:percent_protected | Population, data = steelhead_all)
+summary(model)
 ```
 
 ## Assumptions of OLS
@@ -168,8 +197,7 @@ confint(model, 'year', level = 0.95)
 My data does not necessarily appear to be linear in parameters, which may cause it violate the first assumption of OLS.
 
 ```{r}
-ggplot(data = steelhead_all, aes(x = Brood_year, y = Value)) + geom_point()
-
+ggplot(data = steelhead_all, aes(x = year, y = Value)) + geom_point() +labs(x = "Year", y = "Population Count") + ylim(0,5000)
 ```
 
 ### X has variation
@@ -185,7 +213,32 @@ These do not appear to be normally distributed.
 residuals <- model$residuals |> as.data.frame()
 
 
-ggplot(data = residuals) + geom_histogram(aes(x = model$residuals))
+ggplot(data = residuals) + geom_histogram(aes(x = model$residuals)) + labs(x = "residuals")
+```
+
+```{r}
+
+res = resid(model)
+
+ggplot() + geom_point(aes(x = steelhead_all$percent_protected,
+                            y = res))
+
+
+```
+
+```{r}
+
+
+model <- felm(Value~year | Population, data = steelhead_all)
+
+summary(lm(Value~year, data = steelhead_all))
+
+summary(felm(Value ~ percent_protected |year, data = steelhead_all))
+
+summary(model)
+
+
+
 ```
 
 # Coho
@@ -194,25 +247,55 @@ ggplot(data = residuals) + geom_histogram(aes(x = model$residuals))
 
 coho <- all_data |> filter(Species == "Coho salmon")
 
-coho2 <- coho |>  group_by(Population, Brood_year) |> summarize(Value = mean(Value), percent_protected = mean(percent_protected)) #taking the mean estimation for years where estimate done in multiple ways 
+coho_consistent <- steelhead |> group_by(Population) |> summarize(percent_protected = max(percent_protected)) #making value of percent protected consistent across the population
 
-ggplot(data = coho2) + geom_point(aes(x = Brood_year, y = Value))
+coho_summary <- coho |>  group_by(Population, Brood_year) |> summarize(Value = round(mean(Value),0)) #taking average where population count calculated in more than one way
 
+coho_final <- left_join(coho_summary, coho_consistent, by = "Population")
+
+
+data_years <- coho2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) #find what years I have data over
+
+use_list <- data_years |> filter(min_year <= 2010) |> filter(max_year >= 2017)
+
+list <- use_list$Population
+
+coho_usable <- coho2 |> filter(Population %in% list) |> filter(Brood_year >= 2010) |> filter(Brood_year <= 2017)
+#remove any populations which are zero over this whole time period
+
+coho12 <- coho_usable |> group_by(Population) |> summarize(max = max(Value)) |> filter(max == 0)
+
+remove <- coho12$Population
+
+coho_usable2 <- coho_usable |> filter(!Population %in% remove)
+
+remove_list <- coho_usable2 |> group_by(Population) |> summarize(min_year = min(Brood_year), max_year = max(Brood_year), total_year = length(Brood_year)) |> 
+  filter(max_year != 2017 | min_year != 2010)
+
+remove <- remove_list$Population
+
+coho <- coho_usable2 |> filter(!Population %in% remove)
 
 ```
 
 ```{r}
-coho_final <- coho2 |>  mutate(year = as.numeric(Brood_year) - 1995)
+coho_final <- coho2 |>  mutate(year = as.numeric(Brood_year) - 2010)
 
-summary(felm(Value~year + year:percent_protected + percent_protected | Population, data = coho_final))
 
-model <- felm(Value~year + percent_protected + year:percent_protected | Population | 0 |Population , data = steelhead_all)
+model <- lm(Value~year + percent_protected + year:percent_protected, data = coho_final)
+
 
 summary(model)
 confint(model, 'percent_protected', level = 0.95)
 
 confint(model, 'year', level = 0.95)
 
+```
+
+## all data 
+
+```{r}
+coho_all <- coho2 |>  mutate(year = as.numeric(Brood_year) - 1981)
 ```
 
 # Limitations and Issues
